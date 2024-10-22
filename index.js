@@ -34,6 +34,7 @@ app.use(cors({
 app.use(express.json());
 
 // Function to handle OCR
+// Function to handle OCR
 app.post('/scanSerialNumber', async (req, res) => {
     const { imageBase64 } = req.body;
   
@@ -46,8 +47,64 @@ app.post('/scanSerialNumber', async (req, res) => {
         const detections = result.textAnnotations;
   
         if (detections.length > 0) {
-          const detectedSerialNumber = detections[0].description.trim();
-          return res.status(200).send({ serialNumber: detectedSerialNumber });
+          const detectedText = detections[0].description.trim();
+  
+          // Initialize variables
+          let os = null;
+          let exp = null;
+          let po = null;
+          let serialNum = null;
+          let warranty = null;
+          let other = detectedText; // Initialize 'other' to include all detected text initially
+  
+          // Regular expressions for each keyword
+          const osRegex = /OS[:\s]+([^\n]+)/i;
+          const expRegex = /Exp[:\s]+([^\n]+)/i;
+          const poRegex = /P+([^\n]+)/i;
+          const serialNumRegex = /Serial+([^\n]+)/i;
+          const warrantyRegex = /Warranty+([^\n]+)/i;
+  
+          // Extract text beside each keyword
+          const osMatch = detectedText.match(osRegex);
+          const expMatch = detectedText.match(expRegex);
+          const poMatch = detectedText.match(poRegex);
+          const serialNumMatch = detectedText.match(serialNumRegex);
+          const warrantyMatch = detectedText.match(warrantyRegex);
+  
+          // Assign extracted values
+          if (osMatch) os = osMatch[1].trim();
+          if (expMatch) exp = expMatch[1].trim();
+          if (poMatch) po = poMatch[1].trim();
+          if (serialNumMatch) serialNum = serialNumMatch[1].trim();
+          if (warrantyMatch) warranty = warrantyMatch[1].trim();
+  
+          // Ensure P/O is not part of the Exp field (like "Exp: June, 2020 P/O: 450165")
+          if (exp && exp.includes('P/O:')) {
+            const expSplit = exp.split('P/O:');
+            exp = expSplit[0].trim();
+            po = po || expSplit[1].trim(); // Use P/O from the Exp field if no separate P/O found
+          }
+  
+          // Remove matched text from 'other'
+          other = other.replace(osMatch ? osMatch[0] : '', '')
+            .replace(expMatch ? expMatch[0] : '', '')
+            .replace(poMatch ? poMatch[0] : '', '')
+            .replace(serialNumMatch ? serialNumMatch[0] : '', '')
+            .replace(warrantyMatch ? warrantyMatch[0] : '', '')
+            .trim();
+  
+          // Order fields correctly
+          const responseData = {
+            serialNum: serialNum || 'N/A',
+            exp: exp || 'N/A',
+            warranty: warranty || 'N/A',
+            po: po || 'N/A',
+            os: os || 'N/A',
+            other: other || 'N/A'
+          };
+  
+          // Return the sorted and cleaned data
+          return res.status(200).send(responseData);
         } else {
           return res.status(400).send({ message: "No text detected in the image." });
         }
@@ -58,23 +115,27 @@ app.post('/scanSerialNumber', async (req, res) => {
       console.error("Error processing request: ", error);
       res.status(500).send({ message: "Error processing request", error: error.message });
     }
-});
+  });
+  
 
 // Function to handle saving to Firestore and Google Sheets
+// Function to handle saving to Firestore and Google Sheets
 app.post('/saveSerialNumber', async (req, res) => {
-    const { roomNumber, serialNumber } = req.body;
-
+    const { roomNumber, serialNumber, os, po, warranty, exp, other } = req.body; // Include exp here
+  
     try {
       if (!serialNumber) {
         return res.status(400).send({ message: "No serial number provided." });
       }
   
-      // Save to Firestore
-      await admin.firestore().collection("scannedData").add({
-        room: roomNumber,
-        serialNumber,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      // Default all fields to empty strings if they are null or undefined
+      const room = roomNumber || 'N/A';
+      const serial = serialNumber || 'N/A';
+      const operatingSystem = os || 'N/A';
+      const purchaseOrder = po || 'N/A';
+      const productWarranty = warranty || 'N/A';
+      const expirationDate = exp || 'N/A'; // Use exp here
+      const additionalInfo = other || 'N/A';
   
       // Save to Google Sheets
       const authClient = await auth.getClient();
@@ -85,7 +146,8 @@ app.post('/saveSerialNumber', async (req, res) => {
         valueInputOption: 'RAW',
         insertDataOption: 'INSERT_ROWS',
         resource: {
-          values: [[roomNumber, serialNumber]],
+          // Ensure that all fields (including warranty and exp) are passed to Google Sheets
+          values: [[room, serial, operatingSystem, purchaseOrder, productWarranty, expirationDate, additionalInfo]],
         },
         auth: authClient,
       };
@@ -97,7 +159,8 @@ app.post('/saveSerialNumber', async (req, res) => {
       console.error("Error saving data: ", error);
       res.status(500).send({ message: "Error saving data", error: error.message });
     }
-});
+  });
+
   
 
 exports.scanSerialNumber = functions.https.onRequest(app);
